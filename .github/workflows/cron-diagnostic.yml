@@ -1,26 +1,49 @@
-name: Cron scheduling diagnostic
+name: Oracle A1 schedule watchdog
 
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    - cron: '26,56 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: write
+  issues: read
+
+concurrency:
+  group: oracle-a1-watchdog
+  cancel-in-progress: false
 
 jobs:
-  probe:
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
+  watchdog:
+    if: ${{ vars.OCI_ENABLE_LAUNCH == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
     steps:
-      - name: Report scheduling status
+      - name: Dispatch Oracle only if overdue
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          SCHEDULE: ${{ github.event.schedule }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          echo "Event: $EVENT_NAME"
-          echo "Schedule: $SCHEDULE"
-          echo "UTC now: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "### Cron diagnostic" >> "$GITHUB_STEP_SUMMARY"
-          echo "Event: $EVENT_NAME" >> "$GITHUB_STEP_SUMMARY"
-          echo "UTC now: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          echo "Checking most recent Oracle A1 workflow run"
+          last_created="$(gh api "repos/${GH_REPO}/actions/workflows/oracle-a1.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at // ""')"
+          now="$(date -u +%s)"
+          if [[ -n "$last_created" ]]; then
+            last_epoch="$(date -u -d "$last_created" +%s)"
+            age="$((now - last_epoch))"
+            echo "Last Oracle run age: ${age}s"
+            if (( age < 2100 )); then
+              echo "Most recent run is under 35 minutes old; skipping duplicate dispatch."
+              exit 0
+            fi
+          fi
+          title="Oracle A1: solicitud de instancia aceptada"
+          if gh issue list --repo "$GH_REPO" --state all --limit 100 --json title --jq '.[].title' | grep -Fxq "$title"; then
+            echo "Oracle success notification issue already exists; no new dispatch."
+            exit 0
+          fi
+          echo "Oracle workflow is overdue. Dispatching actual launch attempt."
+          gh workflow run oracle-a1.yml --repo "$GH_REPO" --ref main -f dry_run=false
+          echo "Submitted Oracle workflow_dispatch."
