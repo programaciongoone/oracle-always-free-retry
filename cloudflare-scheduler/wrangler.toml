@@ -1,0 +1,7 @@
+name = "oracle-always-free-retry-scheduler"
+main = "src/index.js"
+compatibility_date = "2026-11-10"
+workers_dev = false
+
+[triggers]
+crons = ["5,35 * * * *"]
