@@ -2,7 +2,7 @@ name: Oracle A1 Always Free - Madrid
 
 on:
   schedule:
-    - cron: '13,43 * * * *'
+    - cron: '14,44 * * * *'
   repository_dispatch:
     types: [oracle_a1_retry]
   workflow_dispatch:
