@@ -2,7 +2,7 @@ name: Oracle A1 schedule watchdog
 
 on:
   schedule:
-    - cron: '6,16,26,36,46,56 * * * *'
+    - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
 
 permissions:
