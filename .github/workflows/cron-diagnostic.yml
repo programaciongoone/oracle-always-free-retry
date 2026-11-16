@@ -30,7 +30,7 @@ jobs:
           echo "Checking if a launch run was already scheduled in the current UTC hour"
           hour="$(date -u +%Y-%m-%dT%H)"
           existing="$(gh api "repos/${GH_REPO}/actions/workflows/oracle-a1.yml/runs?per_page=100" \
-            --jq ".workflow_runs | map(select((.created_at | startswith(\\\"$hour\\\")) and (.display_title != \\\"Oracle A1 dry-run\\\"))) | length")"
+            --jq ".workflow_runs | map(select((.created_at | startswith(\"$hour\")) and (.display_title != \"Oracle A1 dry-run\"))) | length")"
           if (( existing > 0 )); then
             echo "Found ${existing} run(s) in UTC hour ${hour}; skipping duplicate dispatch."
             exit 0
