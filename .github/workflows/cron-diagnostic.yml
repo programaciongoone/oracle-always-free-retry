@@ -2,7 +2,7 @@ name: Oracle A1 schedule watchdog
 
 on:
   schedule:
-    - cron: '7,17,27,37,47,57 * * * *'
+    - cron: '27,37,47,57 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -27,17 +27,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Checking most recent Oracle A1 workflow run"
-          last_created="$(gh api "repos/${GH_REPO}/actions/workflows/oracle-a1.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at // ""')"
-          now="$(date -u +%s)"
-          if [[ -n "$last_created" ]]; then
-            last_epoch="$(date -u -d "$last_created" +%s)"
-            age="$((now - last_epoch))"
-            echo "Last Oracle run age: ${age}s"
-            if (( age < 2100 )); then
-              echo "Most recent run is under 35 minutes old; skipping duplicate dispatch."
-              exit 0
-            fi
+          echo "Checking if a launch run was already scheduled in the current UTC hour"
+          hour="$(date -u +%Y-%m-%dT%H)"
+          existing="$(gh api "repos/${GH_REPO}/actions/workflows/oracle-a1.yml/runs?per_page=100" \
+            --jq ".workflow_runs | map(select((.created_at | startswith(\\\"$hour\\\")) and (.display_title != \\\"Oracle A1 dry-run\\\"))) | length")"
+          if (( existing > 0 )); then
+            echo "Found ${existing} run(s) in UTC hour ${hour}; skipping duplicate dispatch."
+            exit 0
           fi
           title="Oracle A1: solicitud de instancia aceptada"
           if gh issue list --repo "$GH_REPO" --state all --limit 100 --json title --jq '.[].title' | grep -Fxq "$title"; then
