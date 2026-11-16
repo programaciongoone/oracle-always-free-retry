@@ -6,8 +6,8 @@ Automatización con GitHub Actions para intentar crear una VM Oracle Ampere A1 (
 
 ## Comportamiento
 
-- Dos intentos por hora aproximadamente (17 y 47 UTC); GitHub puede retrasar o saltar cron.
-- Una sola petición de creación por ejecución, sin reintentos rápidos, con forma VM.Standard.A1.Flex, 2 OCPU, 12 GB de RAM y 50 GB de disco.
+- Un intento por hora como objetivo (minuto 14 UTC), con watchdog en los minutos 27/37/47/57 UTC para recuperar horas sin ejecución. GitHub puede retrasar u omitir cron: no se garantizan 24 intentos efectivos al día.
+- El guard horario consulta las ejecuciones de GitHub Actions y permite como máximo una solicitud real por hora UTC (los dry-runs manuales no cuentan). Una sola petición de creación por ejecución, sin reintentos rápidos, con forma VM.Standard.A1.Flex, 2 OCPU, 12 GB de RAM y 50 GB de disco.
 - Imagen Canonical Ubuntu 24.04 ARM64; detecta dominios de disponibilidad reales y alterna si hay varios.
 - Si existe una A1 no terminada en el compartimento, no crea duplicados.
 - Ante errores Out of host capacity o HTTP 429, termina y espera al siguiente cron.
@@ -60,3 +60,12 @@ Documentación oficial:
 - https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
 - https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
 - https://docs.oracle.com/en-us/iaas/tools/python/latest/api/core/client/oci.core.ComputeClient.html
+
+## Programación horaria (noviembre 2026)
+
+- `oracle-a1.yml`: `14 * * * *` (24 oportunidades UTC/día).
+- `cron-diagnostic.yml`: `27,37,47,57 * * * *`, solo lanza un intento si en la hora UTC actual aún no consta ninguna ejecución real.
+- `hour_guard` del workflow principal revisa la primera ejecución real de la misma hora UTC y omite duplicados. Ante fallo de la consulta, bloquea la petición por seguridad.
+- Un `workflow_dispatch` manual con `dry_run=true` no consume una oportunidad. Un despacho manual real sí cuenta para esa hora.
+- Esto limita a 24 intentos automáticos máximos por día UTC, pero **no garantiza** 24 intentos efectivos: tanto el cron como el watchdog dependen de GitHub Actions. Para independencia real hace falta un programador externo configurado y probado.
+- Tras cada cambio, comprobar en Actions que el workflow es válido y que se ejecuta al menos una vez; el conector de edición de GitHub no equivale a una prueba de ejecución.
