@@ -1,8 +1,9 @@
 name: Oracle A1 Always Free - Madrid
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'Oracle A1 dry-run' || 'Oracle A1 launch' }}
 
 on:
   schedule:
-    - cron: '14,44 * * * *'
+    - cron: '14 * * * *'
   repository_dispatch:
     types: [oracle_a1_retry]
   workflow_dispatch:
@@ -28,6 +29,35 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
+      - name: Enforce one actual attempt per UTC hour
+        id: hour_guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$INPUT_DRY_RUN" == "true" ]]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dry-run allowed; this is not a real launch attempt."
+            exit 0
+          fi
+          hour="$(date -u +%Y-%m-%dT%H)"
+          first_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/oracle-a1.yml/runs?per_page=100" \
+            --jq ".workflow_runs | map(select((.created_at | startswith(\"$hour\")) and (.display_title != \"Oracle A1 dry-run\"))) | min_by(.id).id // empty")"
+          if [[ -z "$first_id" ]]; then
+            echo "Cannot verify hourly uniqueness: refusing a launch." >&2
+            exit 1
+          fi
+          if [[ "$first_id" != "$GITHUB_RUN_ID" ]]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "STATUS: duplicate-hour: a launch was already scheduled during UTC hour $hour."
+            echo "### Oracle A1: duplicate-hour" >> "$GITHUB_STEP_SUMMARY"
+            echo "One launch per UTC hour; skipping duplicate run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "This is the first real launch run for UTC hour $hour."
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -35,6 +65,7 @@ jobs:
       - name: Install OCI SDK
         run: python -m pip install --disable-pip-version-check -r requirements.txt
       - name: One safe Oracle request
+        if: ${{ steps.hour_guard.outputs.proceed == 'true' }}
         id: oracle
         env:
           OCI_ENABLE_LAUNCH: ${{ vars.OCI_ENABLE_LAUNCH }}
