@@ -15,6 +15,85 @@ RAM_GB = 12
 BOOT_GB = 50
 NAME = "coolify-free-a1"
 
+# Ordered from most useful to smallest; all stay inside the existing A1 ceiling.
+CANDIDATES = ((OCPUS, RAM_GB), (2, 8), (1, 6), (1, 2))
+FAULT_DOMAINS = ("FAULT-DOMAIN-1", "FAULT-DOMAIN-2", "FAULT-DOMAIN-3")
+
+
+def select_capacity(rows):
+    """Return the preferred reported configuration and optional fault domain."""
+    for cpus, ram in CANDIDATES:
+        matches = []
+        for row in rows:
+            config = getattr(row, "instance_shape_config", None)
+            if getattr(row, "instance_shape", None) != SHAPE or config is None:
+                continue
+            if (getattr(config, "ocpus", None), getattr(config, "memory_in_gbs", None)) != (cpus, ram):
+                continue
+            if getattr(row, "availability_status", None) != "AVAILABLE":
+                continue
+            count = getattr(row, "available_count", None)
+            if count is not None and count <= 0:
+                continue
+            fd = getattr(row, "fault_domain", None)
+            if fd is not None and fd not in FAULT_DOMAINS:
+                continue
+            matches.append((count or 0, fd or ""))
+        if matches:
+            # Prefer the domain with the highest reported capacity.
+            _, fd = max(matches)
+            return cpus, ram, fd or None
+    return None
+
+
+def fallback_capacity(hour):
+    """One configuration per UTC hour; no extra launch requests."""
+    cpus, ram = CANDIDATES[hour % len(CANDIDATES)]
+    return cpus, ram, None
+
+
+def choose_capacity(compute, tenancy, domain):
+    import oci
+    hour = int(datetime.now(timezone.utc).timestamp() // 3600)
+    models = oci.core.models
+    details = models.CreateComputeCapacityReportDetails(
+        compartment_id=tenancy, availability_domain=domain,
+        shape_availabilities=[
+            models.CreateCapacityReportShapeAvailabilityDetails(
+                instance_shape=SHAPE,
+                instance_shape_config=models.CapacityReportInstanceShapeConfig(
+                    ocpus=cpus, memory_in_gbs=ram))
+            for cpus, ram in CANDIDATES])
+    try:
+        rows = compute.create_compute_capacity_report(
+            details, retry_strategy=oci.retry.NoneRetryStrategy()).data.shape_availabilities
+    except oci.exceptions.ServiceError as error:
+        # Some accounts may not be allowed to query capacity. Do not retry a
+        # throttled or unexpected API failure in the same cycle.
+        if error.status not in (400, 403, 404, 405, 501):
+            raise
+        print(f"CAPACITY: report unavailable (HTTP {error.status}); rotating configuration.")
+        return fallback_capacity(hour)
+    rows = rows or []
+    chosen = select_capacity(rows)
+    for cpus, ram in CANDIDATES:
+        matching = [r for r in rows if getattr(r, "instance_shape", None) == SHAPE
+                    and (getattr(getattr(r, "instance_shape_config", None), "ocpus", None),
+                         getattr(getattr(r, "instance_shape_config", None), "memory_in_gbs", None))
+                    == (cpus, ram)]
+        available = select_capacity(matching) is not None
+        print(f"CAPACITY: {cpus} OCPU / {ram} GB: "
+              f"{'available' if available else 'not confirmed'}")
+    if chosen is not None:
+        print("CAPACITY: selecting best reported configuration.")
+        return chosen
+    # A capacity report is not a reservation and may not reflect the free pool.
+    # Keep the existing single hourly launch, rotating the requested size.
+    print("CAPACITY: no positive match; rotating configuration.")
+    return fallback_capacity(hour)
+
+
+
 def report(status, message):
     print(f"STATUS: {status}: {message}", flush=True)
     if os.getenv("GITHUB_OUTPUT"):
@@ -90,14 +169,22 @@ def attempt(compute, identity, cfg, dry_run):
         return
     image_id = select_image(compute, compartment)
     domain = select_domain(identity, cfg["OCI_TENANCY_OCID"])
+    try:
+        cpus, ram, fault_domain = choose_capacity(compute, cfg["OCI_TENANCY_OCID"], domain)
+    except oci.exceptions.ServiceError as error:
+        if error.status == 429:
+            report("rate-limited", "Oracle HTTP 429 en informe de capacidad. Próximo ciclo programado.")
+            return
+        raise
+    print(f"SELECTED: {cpus} OCPU / {ram} GB RAM / {fault_domain or 'automatic'}")
     if dry_run:
-        report("dry-run", f"Sin crear recursos: {SHAPE} / {OCPUS} OCPU / {RAM_GB} GB RAM / {BOOT_GB} GB boot / {domain}")
+        report("dry-run", f"Sin crear instancia: {SHAPE} / {cpus} OCPU / {ram} GB RAM / {BOOT_GB} GB boot")
         return
     details = oci.core.models.LaunchInstanceDetails(
         compartment_id=compartment, availability_domain=domain,
-        display_name=NAME, shape=SHAPE,
+        display_name=NAME, shape=SHAPE, fault_domain=fault_domain,
         shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
-            ocpus=OCPUS, memory_in_gbs=RAM_GB),
+            ocpus=cpus, memory_in_gbs=ram),
         source_details=oci.core.models.InstanceSourceViaImageDetails(
             image_id=image_id, boot_volume_size_in_gbs=BOOT_GB),
         create_vnic_details=oci.core.models.CreateVnicDetails(
@@ -117,7 +204,7 @@ def attempt(compute, identity, cfg, dry_run):
         else:
             raise
         return
-    report("created", f"Solicitud aceptada. Instancia: {vm.id}. Confirmar estado y costes en OCI.")
+    report("created", f"Solicitud aceptada: {cpus} OCPU / {ram} GB RAM. Confirmar estado y costes en OCI.")
 
 def main():
     enabled = os.getenv("OCI_ENABLE_LAUNCH", "").lower() == "true"
