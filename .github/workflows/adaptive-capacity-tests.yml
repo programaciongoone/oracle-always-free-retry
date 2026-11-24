@@ -1,0 +1,36 @@
+name: Adaptive capacity tests
+on:
+  pull_request:
+    paths:
+      - 'oracle_a1.py'
+      - 'tests/**'
+      - '.github/workflows/adaptive-capacity-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -v
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Verify SDK model compatibility without Oracle credentials
+        run: |
+          python - <<'PY'
+          from oci.core import models
+          from oracle_a1 import CANDIDATES, SHAPE
+          request = models.CreateComputeCapacityReportDetails(
+              compartment_id="ocid1.tenancy.example", availability_domain="AD",
+              shape_availabilities=[
+                  models.CreateCapacityReportShapeAvailabilityDetails(
+                      instance_shape=SHAPE,
+                      instance_shape_config=models.CapacityReportInstanceShapeConfig(
+                          ocpus=c, memory_in_gbs=r))
+                  for c, r in CANDIDATES])
+          assert len(request.shape_availabilities) == 4
+          PY
