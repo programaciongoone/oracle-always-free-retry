@@ -1,0 +1,61 @@
+name: Adaptive capacity tests
+on:
+  pull_request:
+    paths:
+      - 'oracle_a1.py'
+      - 'tests/**'
+      - '.github/workflows/adaptive-capacity-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -v
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Verify SDK model compatibility without Oracle credentials
+        run: |
+          python - <<'PY'
+          from oci.core import models
+          from oracle_a1 import CANDIDATES, SHAPE
+          request = models.CreateComputeCapacityReportDetails(
+              compartment_id="ocid1.tenancy.example", availability_domain="AD",
+              shape_availabilities=[
+                  models.CreateCapacityReportShapeAvailabilityDetails(
+                      instance_shape=SHAPE,
+                      instance_shape_config=models.CapacityReportInstanceShapeConfig(
+                          ocpus=c, memory_in_gbs=r))
+                  for c, r in CANDIDATES])
+          assert len(request.shape_availabilities) == 4
+          PY
+  live-diagnostic:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'work/adaptive-capacity-v1' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Query Oracle in dry-run mode only
+        env:
+          OCI_ENABLE_LAUNCH: 'false'
+          OCI_DRY_RUN: 'true'
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY_B64: ${{ secrets.OCI_PRIVATE_KEY_B64 }}
+          OCI_PRIVATE_KEY_PASSPHRASE: ${{ secrets.OCI_PRIVATE_KEY_PASSPHRASE }}
+          OCI_COMPARTMENT_OCID: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          OCI_SUBNET_OCID: ${{ secrets.OCI_SUBNET_OCID }}
+          OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          OCI_AVAILABILITY_DOMAIN: ${{ vars.OCI_AVAILABILITY_DOMAIN }}
+          OCI_IMAGE_OCID: ${{ vars.OCI_IMAGE_OCID }}
+        run: python oracle_a1.py
